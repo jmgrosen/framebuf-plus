@@ -4,22 +4,35 @@ add_library(usermod_framebuf_plus INTERFACE)
 
 # include(${CMAKE_CURRENT_LIST_DIR}/depend.cmake)
 
-set(SRC ${CMAKE_CURRENT_LIST_DIR}/modframebuf.c)
-set(GFX_SRC ${CMAKE_CURRENT_LIST_DIR}/gfxfont/gfxfont.c)
-file(GLOB ZLIB_SRC ${CMAKE_CURRENT_LIST_DIR}/gfxfont/zlib/*.c)
-# file(GLOB ZLIB_SRC ${CMAKE_CURRENT_LIST_DIR}//lib/zlib/*.c)
+# mod
+set(MOD_DIR ${CMAKE_CURRENT_LIST_DIR})
+set(MOD_SRC ${MOD_DIR}/modframebuf.c)
+set(MOD_INC ${MOD_DIR})
+
+# gfx font
+set(GFX_DIR ${CMAKE_CURRENT_LIST_DIR}/gfxfont)
+set(GFX_SRC ${GFX_DIR}/gfxfont.c)
+set(GFX_INC ${GFX_DIR})
+
+file(GLOB ZLIB_SRC ${GFX_DIR}/zlib/*.c)
+list(APPEND GFX_SRC ${ZLIB_SRC})
+
+# jpg
+set(JPG_DIR ${CMAKE_CURRENT_LIST_DIR}/tjpgd)
+set(JPG_SRC ${JPG_DIR}/tjpgd.c)
+set(JPG_INC ${JPG_DIR})
 
 target_sources(usermod_framebuf_plus INTERFACE
-    ${SRC}
+    ${MOD_SRC}
     ${GFX_SRC}
-    ${ZLIB_SRC}
+    ${JPG_SRC}
 )
 
 # Add the current directory as an include directory.
 target_include_directories(usermod_framebuf_plus INTERFACE
-    ${CMAKE_CURRENT_LIST_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/gfxfont
-    # ${CMAKE_CURRENT_LIST_DIR}/lib
+    ${MOD_INC}
+    ${GFX_INC}
+    ${JPG_INC}
 )
 
 # Link our INTERFACE library to the usermod target.

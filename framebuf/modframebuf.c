@@ -39,10 +39,17 @@
 #include "extmod/font_petme128_8x8.h"
 
 #define SUPPORT_GFX_FONT (1)
+#define SUPPORT_JPG (1)
 
 #if SUPPORT_GFX_FONT
 #include "gfxfont/gfxfont.h"
 #include "zlib/zlib.h"
+#endif
+
+#if SUPPORT_JPG
+#include "tjpgd.h"
+#include "extmod/vfs.h"
+#include "py/stream.h"
 #endif
 
 typedef struct _mp_obj_framebuf_t {
@@ -336,6 +343,97 @@ STATIC void fill_rect(const mp_obj_framebuf_t *fb, int x, int y, int w, int h, u
 
     formats[fb->format].fill_rect(fb, x, y, xend - x, yend - y, col);
 }
+
+
+#if SUPPORT_JPG
+// User defined device identifier
+typedef struct {
+    // for file input function
+    mp_obj_t fp; /* Input stream */
+
+    // for buffer input function
+    uint8_t *data;
+    unsigned int data_index;
+    unsigned int data_len;
+
+    // for output
+    uint8_t * fbuf; /* Output frame buffer */
+    unsigned int wfbuf; /* Width of the frame buffer [pix] */
+} IODEV;
+
+
+const char *jd_errors[] = {
+    "Succeeded",
+    "Interrupted by output function",
+    "Device error or wrong termination of input stream",
+    "Insufficient memory pool for the image",
+    "Insufficient stream input buffer",
+    "Parameter error",
+    "Data format error",
+    "Right format but not supported",
+    "Not supported JPEG standard"
+};
+
+static const uint8_t gs8_curve[] = {
+    0x00, 0x01, 0x01, 0x02, 0x03, 0x03, 0x04, 0x05,
+    0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+    0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e,
+    0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d,
+    0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e,
+    0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
+    0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf, 0xc1, 0xc2,
+    0xdd, 0xde, 0xdf, 0xe0, 0xe1, 0xe2, 0xe3, 0xe4,
+    0x00, 0x00, 0x00, 0x00, 0x5c, 0x3d, 0xcf, 0x3f,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xa5, 0xa5, 0xa5, 0x58, 0x01, 0x00, 0x00,
+    0x74, 0x31, 0xc9, 0x3f, 0x18, 0x00, 0x00, 0x00,
+    0x6d, 0x61, 0x69, 0x6e, 0x00, 0x1a, 0x8f, 0x32,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+typedef uint32_t (*color_converts_t)(uint8_t, uint8_t, uint8_t);
+
+STATIC uint32_t rgb888_to_gs8(uint8_t r, uint8_t g, uint8_t b) {
+    uint32_t gamme_val = (r * 38 + g * 75 + b * 15) >> 7;
+    return gs8_curve[gamme_val];
+}
+
+STATIC uint32_t rgb888_to_gs4(uint8_t r, uint8_t g, uint8_t b) {
+    uint32_t gamme_val = (r * 38 + g * 75 + b * 15) >> 7;
+    return (gs8_curve[gamme_val] >> 4);
+}
+
+STATIC color_converts_t converts[] = {
+    [FRAMEBUF_MVLSB]    = NULL,
+    [FRAMEBUF_RGB565]   = NULL,
+    [FRAMEBUF_GS2_HMSB] = NULL,
+    [FRAMEBUF_GS4_HMSB] = rgb888_to_gs4,
+    [FRAMEBUF_GS8]      = rgb888_to_gs8,
+    [FRAMEBUF_MHLSB]    = NULL,
+    [FRAMEBUF_MHMSB]    = NULL,
+    [FRAMEBUF_GS4_HLSB] = rgb888_to_gs4,
+};
+
+#endif
+
 
 STATIC mp_obj_t framebuf_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args_in) {
     mp_arg_check_num(n_args, n_kw, 4, 5, false);
@@ -1100,8 +1198,213 @@ STATIC mp_obj_t framebuf_get_text_size(size_t n_args, const mp_obj_t *args_in) {
     return mp_obj_new_tuple(2, value);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(framebuf_get_text_size_obj, 2, 2, framebuf_get_text_size);
-
 #endif // SUPPORT_GFX_FONT
+
+#if SUPPORT_JPG
+// Returns number of bytes read (zero on error)
+STATIC unsigned int buffer_in_func(JDEC *jd, uint8_t *buff, unsigned int nbyte) {
+    IODEV *dev = (IODEV *) jd->device;
+
+    mp_printf(&mp_plat_print, "buffer_in_func\n");
+
+    if (dev->data_index + nbyte > dev->data_len) {
+        nbyte = dev->data_len - dev->data_index;
+    }
+
+    if (buff) {
+        memcpy(buff, (uint8_t *) (dev->data + dev->data_index), nbyte);
+    }
+
+    dev->data_index += nbyte;
+    return nbyte;
+}
+
+
+// file input function
+STATIC unsigned int file_in_func(JDEC *jd, uint8_t *buff, unsigned int nbyte) {
+    IODEV *dev = (IODEV *)jd->device;
+    unsigned int nread;
+    int errcode;
+
+    if (buff) { // Read data from input stream
+        nread = (unsigned int)mp_stream_rw(dev->fp, buff, nbyte, &errcode, MP_STREAM_RW_READ);
+        return nread;
+    }
+
+    // Remove data from input stream if buff was NULL
+    // mp_seek(dev->fp, nbyte, SEEK_CUR);
+    return 0;
+}
+
+STATIC int out_fast(JDEC *jd, void *bitmap, JRECT *rect) {
+#if 0
+    IODEV *dev = (IODEV *)jd->device;
+    uint8_t *bitmap_ptr = (uint8_t *)bitmap;
+    uint16_t x_offs = dev->x_offs;
+    uint16_t y_offs = dev->y_offs;
+    uint16_t x = 0;
+    uint16_t y = 0;
+
+    mp_printf(&mp_plat_print, "out_fast top: %d, bottom: %d, left: %d, right: %d\n",
+        rect->top,
+        rect->bottom,
+        rect->left,
+        rect->right
+    );
+
+    for (y = rect->top; y <= rect->bottom; y++) {
+        for (x = rect->left; x <= rect->right; x++) {
+            uint8_t r = *(bitmap_ptr++);
+            uint8_t g = *(bitmap_ptr++);
+            uint8_t b = *(bitmap_ptr++);
+            uint32_t gamme_val = (r * 38 + g * 75 + b * 15) >> 7;
+            // setpixel_checked(
+            //     dev->framebuf_obj,
+            //     x_offs + x,
+            //     y_offs + y,
+            //     (gs8_curve[gamme_val] >> 4),
+            //     1
+            // );
+        }
+    }
+#endif
+
+    IODEV *dev = (IODEV*)jd->device;   /* Session identifier (5th argument of jd_prepare function) */
+    uint8_t *src, *dst;
+    uint16_t y, bws;
+    unsigned int bwd;
+
+    /* Progress indicator */
+    if (rect->left == 0) {
+        printf("\r%lu%%", (rect->top << jd->scale) * 100UL / jd->height);
+    }
+
+    /* Copy the output image rectangle to the frame buffer */
+    src = (uint8_t*)bitmap;                           /* Output bitmap */
+    dst = dev->fbuf + 3 * (rect->top * dev->wfbuf + rect->left);  /* Left-top of rectangle in the frame buffer */
+    bws = 3 * (rect->right - rect->left + 1);     /* Width of the rectangle [byte] */
+    bwd = 3 * dev->wfbuf;                         /* Width of the frame buffer [byte] */
+    for (y = rect->top; y <= rect->bottom; y++) {
+        memcpy(dst, src, bws);   /* Copy a line */
+        src += bws; dst += bwd;  /* Next line */
+    }
+
+    return 1; // Continue to decompress
+}
+
+STATIC mp_obj_t framebuf_jpg(size_t n_args, const mp_obj_t *args_in) {
+    // extract arguments
+    mp_obj_framebuf_t *self = MP_OBJ_TO_PTR(args_in[0]);
+    uint16_t x = 0;
+    uint16_t y = 0;
+
+    if (n_args >= 4) {
+        y = mp_obj_get_int(args_in[3]);
+        if (y > self->height) {
+            return mp_const_none;
+        }
+    }
+
+    if (n_args >= 3) {
+        x = mp_obj_get_int(args_in[2]);
+        if (x > self->width) {
+            return mp_const_none;
+        }
+    }
+
+    mp_buffer_info_t bufinfo;
+    IODEV devid;
+    JRESULT res;
+    JDEC jdec;
+    uint8_t *work = NULL;
+    unsigned int (*input_func)(JDEC*, uint8_t*, unsigned int) = NULL;
+
+    if (mp_obj_is_str(args_in[1])) {
+        // const char *filename = mp_obj_str_get_str(args_in[1]);
+        mp_obj_t vfs_args[2] = {
+            args_in[1],
+            MP_OBJ_NEW_QSTR(MP_QSTR_rb),
+        };
+        devid.fp = mp_vfs_open(MP_ARRAY_SIZE(vfs_args), &vfs_args[0], (mp_map_t *)&mp_const_empty_map);
+        devid.data = MP_OBJ_NULL;
+        devid.data_len = 0;
+        input_func = file_in_func;
+    } else if (mp_obj_is_type(args_in[1], &mp_type_bytes)) {
+        mp_get_buffer_raise(args_in[1], &bufinfo, MP_BUFFER_READ);
+        devid.data_index = 0;
+        devid.data = bufinfo.buf;
+        devid.data_len = bufinfo.len;
+        devid.fp = MP_OBJ_NULL;
+        input_func = buffer_in_func;
+    } else {
+        return mp_const_none;
+    }
+
+    work = (uint8_t *)m_malloc(3100);
+    if (work == NULL) {
+        goto OUT_OF_MEMORY;
+    }
+
+    res = jd_prepare(&jdec, input_func, work, 3100, &devid);
+    if (res != JDR_OK) {
+        goto OUT_PREPARE;
+    }
+
+    devid.fbuf = (uint8_t *)m_malloc(jdec.width * jdec.height * 3);
+    devid.wfbuf = jdec.width;
+
+    res = jd_decomp(&jdec, out_fast, 0);
+    if (res != JDR_OK) {
+        goto OUT_OF_DECOMP;
+    }
+
+    if (devid.fbuf != NULL) {
+        uint8_t *bitmap_ptr = &devid.fbuf[0];
+        for (size_t yy = 0; yy < jdec.width; yy++) {
+            for (size_t xx = 0; xx < jdec.height; xx++) {
+                uint8_t r = *(bitmap_ptr++);
+                uint8_t g = *(bitmap_ptr++);
+                uint8_t b = *(bitmap_ptr++);
+                setpixel_checked(
+                    self,
+                    x + xx,
+                    y + yy,
+                    converts[self->format](r, g, b),
+                    1
+                );
+            }
+        }
+    } else {
+        mp_warning(NULL, "No Output frame buffer");
+    }
+
+    if (devid.fp != MP_OBJ_NULL) {
+        mp_stream_close(devid.fp);
+    }
+
+    if (devid.fbuf != NULL) {
+        m_free(devid.fbuf);
+    }
+
+    m_free(work);
+    mp_obj_t value[2];
+    value[0] = mp_obj_new_int(jdec.width);
+    value[1] = mp_obj_new_int(jdec.height);
+    return mp_obj_new_tuple(2, value);
+OUT_OF_MEMORY:
+    mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("out of memory(tjpgd work)"));
+    return mp_const_none;
+OUT_PREPARE:
+    m_free(work);
+    mp_raise_msg_varg(&mp_type_RuntimeError, MP_ERROR_TEXT("%s(jd_prepare)"), jd_errors[res]);
+    return mp_const_none;
+OUT_OF_DECOMP:
+    m_free(work);
+    mp_raise_msg_varg(&mp_type_RuntimeError, MP_ERROR_TEXT("%s(jd_decomp)"), jd_errors[res]);
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(framebuf_jpg_obj, 2, 4, framebuf_jpg);
+#endif // SUPPORT_JPG
 
 #if !MICROPY_ENABLE_DYNRUNTIME
 STATIC const mp_rom_map_elem_t framebuf_locals_dict_table[] = {
@@ -1123,6 +1426,9 @@ STATIC const mp_rom_map_elem_t framebuf_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_gfx), MP_ROM_PTR(&framebuf_gfx_obj) },
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&framebuf_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_text_size), MP_ROM_PTR(&framebuf_get_text_size_obj) },
+    #endif
+    #if SUPPORT_JPG
+    { MP_ROM_QSTR(MP_QSTR_jpg), MP_ROM_PTR(&framebuf_jpg_obj) },
     #endif
 };
 STATIC MP_DEFINE_CONST_DICT(framebuf_locals_dict, framebuf_locals_dict_table);
