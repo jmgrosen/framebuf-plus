@@ -4,8 +4,17 @@
 
 Added gfx font support on the basis of [framebuf](https://docs.micropython.org/en/latest/library/framebuf.html).
 
-> :warning: Currently only gfx fonts in GS4_HLSB format are supported.
+## Feature
+
+- support gfx fonts
+- jpeg image decoding
 
 ## Tools
 
 For generating gfx fonts, please refer to [fontconvert](tools/README.md)
+
+## TODO
+
+* [] png
+* [] rotation
+* [] doc

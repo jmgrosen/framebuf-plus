@@ -43,6 +43,7 @@
 
 #if SUPPORT_GFX_FONT
 #include "gfxfont/gfxfont.h"
+#include "utf8_rosetta.h"
 #include "zlib/zlib.h"
 #endif
 
@@ -993,6 +994,7 @@ STATIC mp_obj_t framebuf_text(size_t n_args, const mp_obj_t *args_in) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(framebuf_text_obj, 4, 5, framebuf_text);
 
 #if SUPPORT_GFX_FONT
+
 STATIC mp_obj_t framebuf_gfx(size_t n_args, const mp_obj_t *args_in) {
     // extract arguments
     mp_obj_framebuf_t *self = MP_OBJ_TO_PTR(args_in[0]);
@@ -1000,9 +1002,15 @@ STATIC mp_obj_t framebuf_gfx(size_t n_args, const mp_obj_t *args_in) {
     mp_buffer_info_t bufinfo;
 
     if (n_args >= 2) {
+        if (args_in[1] == mp_const_none) {
+            goto OUT;
+        }
         gfxFont = MP_OBJ_TO_PTR(args_in[1]);
-    } else if (self->gfxFont != NULL) {
-        goto OUT;
+    } else {
+        char describe[256] = { 0 };
+        font_get_describe(self->gfxFont, describe, sizeof(describe));
+        mp_printf(&mp_plat_print, "%s", describe);
+        return mp_const_none;
     }
 
     if (self->gfxFont != NULL) {
@@ -1015,18 +1023,21 @@ STATIC mp_obj_t framebuf_gfx(size_t n_args, const mp_obj_t *args_in) {
 
     self->gfxFont = m_malloc(sizeof(GFXfont));
     if (self->gfxFont == NULL) {
+        mp_warning(NULL, "memory allocation failed");
         return mp_const_none;
     }
 
     mp_get_buffer_raise(gfxFont->items[0], &bufinfo, MP_BUFFER_READ);
     self->gfxFont->bitmap = (uint8_t *)bufinfo.buf;
     if (self->gfxFont->bitmap == NULL) {
+        mp_warning(NULL, "memory allocation failed");
         goto OUT_NO_BITMAP;
     }
 
     mp_obj_tuple_t *glyph_tuple = MP_OBJ_TO_PTR(gfxFont->items[1]);
     self->gfxFont->glyph = m_malloc(sizeof(GFXglyph) * glyph_tuple->len);
     if (self->gfxFont->glyph == NULL) {
+        mp_warning(NULL, "memory allocation failed");
         goto OUT_NO_GLYPH;
     }
 
@@ -1044,6 +1055,7 @@ STATIC mp_obj_t framebuf_gfx(size_t n_args, const mp_obj_t *args_in) {
     mp_obj_tuple_t *intervals_tuple = MP_OBJ_TO_PTR(gfxFont->items[2]);
     self->gfxFont->intervals = m_malloc(sizeof(UnicodeInterval) * intervals_tuple->len);
     if (self->gfxFont->intervals == NULL) {
+        mp_warning(NULL, "memory allocation failed");
         goto OUT_NO_INTERVALS;
     }
 
@@ -1059,7 +1071,7 @@ STATIC mp_obj_t framebuf_gfx(size_t n_args, const mp_obj_t *args_in) {
     self->gfxFont->yAdvance      = mp_obj_get_int(gfxFont->items[5]);
     self->gfxFont->ascender      = mp_obj_get_int(gfxFont->items[6]);
     self->gfxFont->descender     = mp_obj_get_int(gfxFont->items[7]);
-    self->gfxFont->format        = mp_obj_get_int(gfxFont->items[8]);
+    self->gfxFont->bpp           = mp_obj_get_int(gfxFont->items[8]);
 
     return mp_const_none;
 
@@ -1076,106 +1088,173 @@ OUT_NO_BITMAP:
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(framebuf_gfx_obj, 1, 2, framebuf_gfx);
 
-static inline int32_t min(int32_t x, int32_t y) {
-    return x < y ? x : y;
+// #define MIN(x, y) ((x) < (y) ? (x) : (y))
+// #define MAX(x, y) ((x) > (y) ? (x) : (y))
+
+typedef uint32_t (*alpha_blend_t)(const FontProperties *, uint8_t , uint32_t);
+
+// TODO: It also lacks a good anti-aliasing algorithm.
+static uint32_t alpha_blend_rgb565(const FontProperties *props, uint8_t bpp, uint32_t alpha)
+{
+#if 1
+    // https://blog.csdn.net/babyshan1/article/details/90747629
+    uint16_t r = 0, g = 0, b = 0;
+    uint16_t bpp_multiple = 1 << bpp;
+
+    if ((props->fg_color == 0xffff) && (props->bg_color == 0)) {
+        r = alpha;
+        g = alpha;
+        b = alpha;
+    } else {
+        if (alpha == (bpp_multiple -1)) {
+            return props->fg_color;
+        } else if (alpha == 0) {
+            return props->bg_color;
+        } else {
+            uint8_t fg = (uint8_t)(props->fg_color & 0xF800 >> 8);
+            uint8_t bg = (uint8_t)(props->bg_color & 0xF800 >> 8);
+            r = ((int)(fg * alpha) + (bg * (bpp_multiple - alpha))) >> 8;
+
+            fg = (uint8_t)(props->fg_color & 0x07E0 >> 3);
+            bg = (uint8_t)(props->bg_color & 0x07E0 >> 3);
+            g = ((int)(fg * alpha) + (bg * (bpp_multiple - alpha))) >> 8;
+
+            fg = (uint8_t)((props->fg_color & 0x001F) << 3);
+            bg = (uint8_t)((props->bg_color & 0x001F) << 3);
+            b = ((int)(fg * alpha) + (bg * (bpp_multiple - alpha))) >> 8;
+        }
+    }
+
+    return (((b >> 3) & 0x1F) << 0) | \
+           (((g << 2) & 0x3F) << 5) | \
+           (((r >> 3) & 0x1F) << 11);
+#else
+    // https://www.amobbs.com/thread-5676479-1-1.html
+    float alpha_factor;
+
+    uint16_t bpp_multiple = 1 << bpp;
+    uint8_t color_r = (props->fg_color) >> 11 << 3;
+    uint8_t color_g = (props->fg_color) << 5 >> 10 << 2;
+    uint8_t color_b = (props->fg_color) << 3;
+
+    uint8_t back_color_r = (props->bg_color) >> 11 << 3;
+    uint8_t back_color_g = (props->bg_color) << 5 >> 10 << 2;
+    uint8_t back_color_b = (props->bg_color) << 3;
+
+    if (alpha == (bpp_multiple -1)) {
+        return props->fg_color;
+    } else if (alpha == 0) {
+        return props->bg_color;
+    } else {
+        alpha_factor = 1.0 * alpha / (bpp_multiple -1);
+        return ((((uint8_t)(alpha_factor * (color_r - back_color_r)) + back_color_r) >> 3) << 11) | \
+               ((((uint8_t)(alpha_factor * (color_g - back_color_g)) + back_color_g) >> 2) << 5) | \
+               ((((uint8_t)(alpha_factor * (color_b - back_color_b)) + back_color_b) >> 3));
+    }
+#endif
 }
 
-static inline int32_t max(int32_t x, int32_t y) {
-    return x > y ? x : y;
+
+uint32_t gs4_alpha_blend(const FontProperties *props, uint8_t bpp, uint32_t alpha)
+{
+    uint16_t bpp_multiple = 1 << bpp;
+    int32_t color_difference = (int32_t)props->fg_color - (int32_t)props->bg_color;
+    uint8_t temp = MAX(0, MIN(15, props->bg_color + ((int32_t)alpha) * color_difference / (bpp_multiple - 1)));
+    return temp;
 }
 
+
+STATIC alpha_blend_t alpha_blends[] = {
+    [FRAMEBUF_MVLSB]    = gs4_alpha_blend,    // TODO
+    [FRAMEBUF_RGB565]   = alpha_blend_rgb565,
+    [FRAMEBUF_GS2_HMSB] = gs4_alpha_blend,    // TODO
+    [FRAMEBUF_GS4_HMSB] = gs4_alpha_blend,
+    [FRAMEBUF_GS8]      = gs4_alpha_blend,    // TODO
+    [FRAMEBUF_MHLSB]    = gs4_alpha_blend,    // TODO
+    [FRAMEBUF_MHMSB]    = gs4_alpha_blend,    // TODO
+    [FRAMEBUF_GS4_HLSB] = gs4_alpha_blend,
+};
+
+// args:
+//     0    1   2 3 4
+//     self str x y pops
+//
+// TODO: Text Color
+// TEST:
+//   compressed:
+//     before: 9302111 us
+//     after: 9307873 us
+//     consume: 5762 us
+//   uncompressed:
+//     before: 258058460 us
+//     after: 258061035 us
+//     consume: 2575 us
 STATIC mp_obj_t framebuf_write(size_t n_args, const mp_obj_t *args_in) {
     // extract arguments
     mp_obj_framebuf_t *self = MP_OBJ_TO_PTR(args_in[0]);
     if (!self->gfxFont) {
+        mp_warning(NULL, "no usable gfx font found");
         return mp_const_none;
     }
 
     const char *str = mp_obj_str_get_str(args_in[1]);
     mp_int_t x0 = mp_obj_get_int(args_in[2]);
     mp_int_t y0 = mp_obj_get_int(args_in[3]);
-    mp_int_t col = 1;
-    if (n_args >= 5) {
-        col = mp_obj_get_int(args_in[4]);
-    }
-
     FontProperties props;
-    if (n_args >= 6) {
-        props.foregroundColor = col;
-        props.BackgroundColor = 15;
-    } else {
-        props.foregroundColor = col;
-        props.BackgroundColor = 15;
+    props.fg_color = 0x0000;
+    props.bg_color = 0xFFFF;
+    if (n_args >= 5) {
+        mp_obj_tuple_t *props_in = MP_OBJ_TO_PTR(args_in[4]);
+        props.fg_color = mp_obj_get_int(props_in->items[0]);
+        props.bg_color = mp_obj_get_int(props_in->items[1]);
     }
 
     // draw char
     int32_t local_cursor_x = x0;
     int32_t local_cursor_y = y0;
-    uint32_t c;
+    uint32_t cp;
 
-    uint8_t color_lut[16];
-    for (int32_t color = 0; color < 16; color++) {
-        int32_t color_difference = (int32_t)props.foregroundColor - (int32_t)props.BackgroundColor;
-        color_lut[color] = max(0, min(15, props.BackgroundColor + color * color_difference / 15));
-    }
-
-    while ((c = nextCodepoint((uint8_t **)&str))) {
+    while ((cp = next_cp((uint8_t **)&str))) {
         GFXglyph *glyph = NULL;
-        glyph = getGlyph(self->gfxFont, c);
-        if (!glyph) {
-            glyph = getGlyph(self->gfxFont, 0);
-            if (!glyph) {
-                continue;
-            }
+        glyph = font_get_glyph(self->gfxFont, cp);
+        if (glyph == NULL) {
+            glyph = font_get_glyph(self->gfxFont, 0);
+        }
+        if (glyph == NULL) {
+            mp_warning(NULL, "can't find glyph(@%d)", cp);
+            continue ;
         }
 
-        uint32_t glyph_offset = glyph->dataOffset;
-        uint8_t glyph_width = glyph->width;
-        uint8_t glyph_height = glyph->height;
-        int32_t glyph_left = glyph->left;
+        uint8_t *bitmap = glygp_get_bitmap(self->gfxFont, glyph);
 
-        int32_t byte_width = (glyph_width / 2 + glyph_width % 2);
-        unsigned long bitmap_size = byte_width * glyph_height;
-        uint8_t *bitmap = NULL;
-        if (self->gfxFont->compressed) {
-            bitmap = (uint8_t *)m_malloc(bitmap_size);
-            uncompress(bitmap, &bitmap_size, &self->gfxFont->bitmap[glyph_offset], glyph->compressedSize);
-        } else {
-            bitmap = &self->gfxFont->bitmap[glyph_offset];
-        }
-
-        for (int32_t y = 0; y < glyph_height; y++) {
+        // x y --> glyph
+        // xx yy --> framebuf
+        for (int32_t y = 0; y < glyph->height; y++) {
             int32_t yy = local_cursor_y - glyph->top + y;
             if (yy < 0 || yy >= self->height) {
                 continue;
             }
-            int32_t start_pos = local_cursor_x + glyph_left;
-            bool byte_complete = start_pos % 2;
-            int32_t x = max(0, -start_pos);
-            int32_t max_x = min(start_pos + glyph_width, self->width);
+            int32_t start_pos = local_cursor_x + glyph->left;
+            int32_t x = MAX(0, -start_pos);
+            int32_t max_x = MIN(start_pos + glyph->width, self->width);
             for (int32_t xx = start_pos; xx < max_x; xx++) {
-                uint8_t bm = bitmap[y * byte_width + x / 2];
-                if ((x & 1) == 0) {
-                    bm = bm & 0xF;
-                } else {
-                    bm = bm >> 4;
-                }
-
-                setpixel(self, xx, yy, color_lut[bm]);
-                byte_complete = !byte_complete;
+                uint32_t alpha = glygp_get_alpha(self->gfxFont, glyph, bitmap, x, y);
+                uint32_t col = alpha_blends[self->format](&props, self->gfxFont->bpp, alpha);
+                setpixel(self, xx, yy, col);
                 x++;
             }
         }
 
+        local_cursor_x += glyph->xAdvance;
+
         if (self->gfxFont->compressed) {
             m_free(bitmap);
         }
-        local_cursor_x += glyph->xAdvance;
     }
 
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(framebuf_write_obj, 4, 6, framebuf_write);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(framebuf_write_obj, 4, 5, framebuf_write);
 
 STATIC mp_obj_t framebuf_get_text_size(size_t n_args, const mp_obj_t *args_in) {
     // extract arguments
@@ -1189,7 +1268,7 @@ STATIC mp_obj_t framebuf_get_text_size(size_t n_args, const mp_obj_t *args_in) {
         return mp_const_none;
     }
 
-    getStringSzie(self->gfxFont, str, &w, &h);
+    font_get_str_szie(self->gfxFont, str, &w, &h);
     // mp_printf(&mp_plat_print, "w: %d, h: %d", w, h);
 
     value[0] = mp_obj_new_int(w);

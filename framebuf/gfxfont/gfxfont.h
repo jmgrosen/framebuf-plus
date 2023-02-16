@@ -4,15 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// constants for formats
-#define GFX_FORMAT_MVLSB    (0)
-#define GFX_FORMAT_RGB565   (1)
-#define GFX_FORMAT_GS2_HMSB (5)
-#define GFX_FORMAT_GS4_HMSB (2)
-#define GFX_FORMAT_GS8      (6)
-#define GFX_FORMAT_MHLSB    (3)
-#define GFX_FORMAT_MHMSB    (4)
-#define GFX_FORMAT_GS4_HLSB (7)
+#define GFX_FORMAT_1BPP (1)
+#define GFX_FORMAT_2BPP (2)
+#define GFX_FORMAT_4BPP (4)
+#define GFX_FORMAT_8BPP (8)
 
 /**
  * @brief Font data stored PER GLYPH
@@ -48,7 +43,7 @@ typedef struct {
     uint8_t          yAdvance;      /** Newline distance (y axis) */
     int32_t          ascender;      /** Maximal height of a glyph above the base line */
     int32_t          descender;     /** Maximal height of a glyph below the base line */
-    uint8_t          format;
+    uint8_t          bpp;
 } GFXfont;
 
 
@@ -56,13 +51,16 @@ typedef struct {
  * @brief Font properties.
  */
 typedef struct {
-    uint8_t foregroundColor: 4; /** Foreground color */
-    uint8_t BackgroundColor: 4; /** Background color */
+    uint32_t fg_color; /** Foreground color */
+    uint32_t bg_color; /** Background color */
 } FontProperties;
 
-uint32_t nextCodepoint(uint8_t **str);
+void font_get_describe(const GFXfont *font, char *describe, int len);
+void font_get_str_szie(const GFXfont *font, const char *str, int32_t *w, int32_t *h);
+GFXglyph * font_get_glyph(const GFXfont *font, uint32_t code_point);
 
-void getStringSzie(const GFXfont *font, const char *str, int32_t *w, int32_t *h);
-GFXglyph * getGlyph(const GFXfont *font, uint32_t code_point);
+uint32_t glygp_get_bitmap_size(const GFXfont *font, const GFXglyph *glyph);
+uint8_t *glygp_get_bitmap(const GFXfont *font, const GFXglyph *glyph);
+uint32_t glygp_get_alpha(const GFXfont *font, const GFXglyph *glyph, const uint8_t *bitmap, int32_t x, int32_t y);
 
 #endif // _GFXFONT_H_

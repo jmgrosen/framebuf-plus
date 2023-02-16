@@ -1,93 +1,150 @@
 #include "gfxfont.h"
 #include "zlib/zlib.h"
-
 #include "py/runtime.h"
+#include "utf8_rosetta.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <inttypes.h>
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
 
-static inline int32_t min(int32_t x, int32_t y) {
-    return x < y ? x : y;
+typedef uint32_t (*getsize_t)(const GFXglyph *);
+typedef uint8_t * (*getbitmap_t)(const GFXfont *font, const GFXglyph *);
+typedef uint32_t (*getalpha_t)(const GFXglyph *, const uint8_t *, int32_t, int32_t);
+
+typedef struct _glyph_p_t {
+    getsize_t getsize;
+    getbitmap_t getbitmap;
+    getalpha_t getalpha;
+} glyph_p_t;
+
+// untested
+static inline uint32_t getsize_1bpp(const GFXglyph *glyph) {
+    return ((glyph->width / 8 + glyph->width % 8) * glyph->height);
 }
 
-static inline int32_t max(int32_t x, int32_t y) {
-    return x > y ? x : y;
+// untested
+static inline uint32_t getsize_2bpp(const GFXglyph *glyph) {
+    return ((glyph->width / 4 + glyph->width % 4) * glyph->height);
 }
 
 
-/**
- * @brief UTF-8 decode inspired from rosetta code
- *
- * https://rosettacode.org/wiki/UTF-8_encode_and_decode#C
- */
-typedef struct {
-    char mask;    /* char data will be bitwise AND with this */
-    char lead;    /* start bytes of current char in utf-8 encoded character */
-    uint32_t beg; /* beginning of codepoint range */
-    uint32_t end; /* end of codepoint range */
-    int bits_stored; /* the number of bits from the codepoint that fits in char */
-}utf_t;
+static inline uint32_t getsize_4bpp(const GFXglyph *glyph) {
+    return ((glyph->width / 2 + glyph->width % 2) * glyph->height);
+}
 
-static const utf_t *utf[] = {
-    /*             mask        lead        beg      end       bits */
-    [0] = &(utf_t){0b00111111, 0b10000000, 0,       0,        6},
-    [1] = &(utf_t){0b01111111, 0b00000000, 0000,    0177,     7},
-    [2] = &(utf_t){0b00011111, 0b11000000, 0200,    03777,    5},
-    [3] = &(utf_t){0b00001111, 0b11100000, 04000,   0177777,  4},
-    [4] = &(utf_t){0b00000111, 0b11110000, 0200000, 04177777, 3},
-    &(utf_t){0},
+
+static inline uint32_t getsize_8bpp(const GFXglyph *glyph) {
+    return (glyph->width * glyph->height);
+}
+
+// untested
+static uint8_t *getbitmap_1bpp(const GFXfont *font, const GFXglyph *glyph) {
+    unsigned long bitmap_size = getsize_1bpp(glyph);
+    uint8_t *bitmap = NULL;
+    if (font->compressed) {
+        bitmap = (uint8_t *)m_malloc(bitmap_size);
+        uncompress(bitmap, &bitmap_size, &font->bitmap[glyph->dataOffset], glyph->compressedSize);
+    } else {
+        bitmap = &font->bitmap[glyph->dataOffset];
+    }
+    return bitmap;
+}
+
+// untested
+static uint8_t *getbitmap_2bpp(const GFXfont *font, const GFXglyph *glyph) {
+    unsigned long bitmap_size = getsize_2bpp(glyph);
+    uint8_t *bitmap = NULL;
+    if (font->compressed) {
+        bitmap = (uint8_t *)m_malloc(bitmap_size);
+        uncompress(bitmap, &bitmap_size, &font->bitmap[glyph->dataOffset], glyph->compressedSize);
+    } else {
+        bitmap = &font->bitmap[glyph->dataOffset];
+    }
+    return bitmap;
+}
+
+
+static uint8_t *getbitmap_4bpp(const GFXfont *font, const GFXglyph *glyph) {
+    unsigned long bitmap_size = getsize_4bpp(glyph);
+    uint8_t *bitmap = NULL;
+    if (font->compressed) {
+        bitmap = (uint8_t *)m_malloc(bitmap_size);
+        uncompress(bitmap, &bitmap_size, &font->bitmap[glyph->dataOffset], glyph->compressedSize);
+    } else {
+        bitmap = &font->bitmap[glyph->dataOffset];
+    }
+    return bitmap;
+}
+
+
+static uint8_t *getbitmap_8bpp(const GFXfont *font, const GFXglyph *glyph) {
+    unsigned long bitmap_size = getsize_8bpp(glyph);
+    uint8_t *bitmap = NULL;
+    if (font->compressed) {
+        bitmap = (uint8_t *)m_malloc(bitmap_size);
+        uncompress(bitmap, &bitmap_size, &font->bitmap[glyph->dataOffset], glyph->compressedSize);
+    } else {
+        bitmap = &font->bitmap[glyph->dataOffset];
+    }
+    return bitmap;
+}
+
+// untested
+static inline uint32_t getalpha_1bpp(const GFXglyph *glyph, const uint8_t *bitmap, int32_t x, int32_t y)
+{
+    int32_t byte_width = (glyph->width / 8 + glyph->width % 8);
+    uint8_t bm = bitmap[y * byte_width + x / 8];
+    return ((bm >> (x / 8)) & 0x01);
+}
+
+// untested
+static inline uint32_t getalpha_2bpp(const GFXglyph *glyph, const uint8_t *bitmap, int32_t x, int32_t y)
+{
+    int32_t byte_width = (glyph->width / 4 + glyph->width % 4);
+    uint8_t bm = bitmap[y * byte_width + x / 4];
+    return ((bm >> (2 * (x / 4))) & 0x03);
+}
+
+
+static inline uint32_t getalpha_4bpp(const GFXglyph *glyph, const uint8_t *bitmap, int32_t x, int32_t y)
+{
+    int32_t byte_width = (glyph->width / 2 + glyph->width % 2);
+    uint8_t bm = bitmap[y * byte_width + x / 2];
+    if ((x & 1) == 0) {
+        bm = bm & 0xF;
+    } else {
+        bm = bm >> 4;
+    }
+    return bm;
+}
+
+
+static uint32_t getalpha_8bpp(const GFXglyph *glyph, const uint8_t *bitmap, int32_t x, int32_t y)
+{
+    return bitmap[y * glyph->width + x];
+}
+
+
+const static glyph_p_t glyph_p[] = {
+    [GFX_FORMAT_1BPP] = {getsize_1bpp, getbitmap_1bpp, getalpha_1bpp},
+    [GFX_FORMAT_2BPP] = {getsize_2bpp, getbitmap_2bpp, getalpha_2bpp},
+    [GFX_FORMAT_4BPP] = {getsize_4bpp, getbitmap_4bpp, getalpha_4bpp},
+    [GFX_FORMAT_8BPP] = {getsize_8bpp, getbitmap_8bpp, getalpha_8bpp},
 };
 
-static int32_t utf8_len(const uint8_t ch)
+
+static void get_char_bounds(
+    const GFXfont *font,
+    uint32_t cp,
+    int32_t *x,
+    int32_t *y,
+    int32_t *minx,
+    int32_t *miny,
+    int32_t *maxx,
+    int32_t *maxy)
 {
-    int32_t len = 0;
-    for (const utf_t **u = utf; *u; ++u) {
-        if ((ch & ~(*u)->mask) == (*u)->lead) {
-            break;
-        }
-        ++len;
-    }
-    if (len > 4) {
-        /* Malformed leading byte */
-        assert("invalid unicode.");
-    }
-    return len;
-}
-
-uint32_t nextCodepoint(uint8_t **str)
-{
-    if (**str == 0) return 0;
-
-    int32_t bytes = utf8_len(**str);
-    uint8_t *chr = *str;
-    *str += bytes;
-    int32_t shift = utf[0]->bits_stored * (bytes - 1);
-    uint32_t codep = (*chr++ & utf[bytes]->mask) << shift;
-
-    for (int32_t i = 1; i < bytes; ++i, ++chr) {
-        shift -= utf[0]->bits_stored;
-        codep |= ((uint8_t)*chr & utf[0]->mask) << shift;
-    }
-
-    return codep;
-}
-
-
-static void get_char_bounds(const GFXfont *font,
-                            uint32_t cp,
-                            int32_t *x,
-                            int32_t *y,
-                            int32_t *minx,
-                            int32_t *miny,
-                            int32_t *maxx,
-                            int32_t *maxy)
-{
-    GFXglyph *glyph = NULL;
-    glyph = getGlyph(font, cp);
-
+    GFXglyph *glyph = font_get_glyph(font, cp);
     if (!glyph) {
-        glyph = getGlyph(font, 0);
+        glyph = font_get_glyph(font, 0);
     }
 
     if (!glyph) return ;
@@ -111,7 +168,7 @@ static void get_char_bounds(const GFXfont *font,
 }
 
 
-void getStringSzie(const GFXfont *font, const char *str, int32_t *w, int32_t *h) {
+void font_get_str_szie(const GFXfont *font, const char *str, int32_t *w, int32_t *h) {
     if (!str) {
         *w = 0;
         *h = 0;
@@ -121,16 +178,15 @@ void getStringSzie(const GFXfont *font, const char *str, int32_t *w, int32_t *h)
     int32_t x = 200;
     int32_t y = 200;
     uint32_t c;
-    while ((c = nextCodepoint((uint8_t **)&str)))
-    {
+    while ((c = next_cp((uint8_t **)&str))) {
         get_char_bounds(font, c, &x, &y, &minx, &miny, &maxx, &maxy);
     }
-    *w = maxx - min(x, minx);
+    *w = maxx - MIN(x, minx);
     *h = maxy - miny;
 }
 
 
-GFXglyph * getGlyph(const GFXfont *font, uint32_t code_point)
+GFXglyph *font_get_glyph(const GFXfont *font, uint32_t code_point)
 {
     UnicodeInterval *intervals = font->intervals;
     for (int32_t i = 0; i < font->intervalCount; i++) {
@@ -143,4 +199,42 @@ GFXglyph * getGlyph(const GFXfont *font, uint32_t code_point)
         }
     }
     return NULL;
+}
+
+
+void font_get_describe(const GFXfont *font, char *describe, int len)
+{
+    size_t pos = 0;
+
+    pos += snprintf(&describe[pos], (len - pos), "BPP: %d\n", font->bpp);
+    pos += snprintf(&describe[pos], (len - pos), "Unicode Range: \n");
+    for (size_t i = 0; i < font->intervalCount; i++) {
+        pos += snprintf(&describe[pos], (len - pos), "  0x%x-0x%x\n", font->intervals[i].first, font->intervals[i].last);
+    }
+    if (font->compressed) {
+        pos += snprintf(&describe[pos], (len - pos), "Compressed: True\n");
+    } else {
+        pos += snprintf(&describe[pos], (len - pos), "Compressed: False\n");
+    }
+    pos += snprintf(&describe[pos], (len - pos), "Newline Distance: %d\n", font->yAdvance);
+    pos += snprintf(&describe[pos], (len - pos), "Ascender: %d\n", font->ascender);
+    pos += snprintf(&describe[pos], (len - pos), "Descender: %d\n", font->descender);
+}
+
+
+uint32_t glygp_get_bitmap_size(const GFXfont *font, const GFXglyph *glyph)
+{
+    return glyph_p[font->bpp].getsize(glyph);
+}
+
+
+uint8_t *glygp_get_bitmap(const GFXfont *font, const GFXglyph *glyph)
+{
+    return glyph_p[font->bpp].getbitmap(font, glyph);
+}
+
+
+uint32_t glygp_get_alpha(const GFXfont *font, const GFXglyph *glyph, const uint8_t *bitmap, int32_t x, int32_t y)
+{
+    return glyph_p[font->bpp].getalpha(glyph, bitmap, x, y);
 }

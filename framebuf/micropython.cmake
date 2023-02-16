@@ -11,7 +11,7 @@ set(MOD_INC ${MOD_DIR})
 
 # gfx font
 set(GFX_DIR ${CMAKE_CURRENT_LIST_DIR}/gfxfont)
-set(GFX_SRC ${GFX_DIR}/gfxfont.c)
+set(GFX_SRC ${GFX_DIR}/gfxfont.c ${GFX_DIR}/utf8_rosetta.c)
 set(GFX_INC ${GFX_DIR})
 
 file(GLOB ZLIB_SRC ${GFX_DIR}/zlib/*.c)

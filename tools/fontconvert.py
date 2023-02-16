@@ -24,7 +24,7 @@ font_name = args.name
 # must not overlap and be in ascending order
 intervals = [
     (32, 126),
-    (160, 255),
+    # (160, 255),
     # (0x2500, 0x259F),
     # (0x2700, 0x27BF),
     # # powerline symbols
@@ -73,6 +73,7 @@ for i_start, i_end in intervals:
         pixels = []
         px = 0
         for i, v in enumerate(bitmap.buffer):
+            # pixels.append(v)
             y = i / bitmap.width
             x = i % bitmap.width
             if x % 2 == 0:
@@ -118,7 +119,7 @@ for index, glyph in enumerate(all_glyphs):
 print("total", total_packed, file=sys.stderr)
 print("compressed", total_size, file=sys.stderr)
 
-f = open("{}{}pt.py".format(font_name, size), 'w')
+f = open("{}{}pt{}bpp.py".format(font_name, size, 4), 'w')
 
 ## out
 f.write("{}Bitmaps =".format(font_name))
@@ -161,5 +162,5 @@ f.write("    {},\n".format("True" if compress else "False"))
 f.write("    {},\n".format(norm_ceil(face.size.height)))
 f.write("    {},\n".format(norm_ceil(face.size.ascender)))
 f.write("    {},\n".format(norm_floor(face.size.descender)))
-f.write("    {},\n".format(7))
-f.write(") # bitmap glyph intervals intervalCount compressed yAdvance ascender descender\n")
+f.write("    {},\n".format(4))
+f.write(") # bitmap glyph intervals intervalCount compressed yAdvance ascender descender bpp\n")
