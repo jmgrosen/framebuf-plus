@@ -87,6 +87,7 @@ typedef struct _mp_framebuf_p_t {
 #define FRAMEBUF_MHLSB    (3)
 #define FRAMEBUF_MHMSB    (4)
 #define FRAMEBUF_GS4_HLSB (7)
+#define FRAMEBUF_RGB888   (8)
 
 // Functions for MHLSB and MHMSB
 
@@ -305,6 +306,35 @@ STATIC void gs4_hlsb_fill_rect(const mp_obj_framebuf_t *fb, unsigned int x, unsi
     }
 }
 
+
+// Functions for RGB888 format (little endian format)
+
+STATIC void rgb888_setpixel(const mp_obj_framebuf_t *fb, unsigned int x, unsigned int y, uint32_t col) {
+    uint8_t *pixel = &((uint8_t*)fb->buf)[3 * x + y * fb->stride];
+    *pixel++ = col & 0xff;
+    *pixel++ = (col >> 8) & 0xff;
+    *pixel++ = (col >> 16) & 0xff;
+}
+
+STATIC uint32_t rgb888_getpixel(const mp_obj_framebuf_t *fb, unsigned int x, unsigned int y) {
+    uint32_t col;
+    uint8_t *pixel = &((uint8_t*)fb->buf)[3 * x + y * fb->stride];
+    col = *pixel++;
+    col = col + ((*pixel++) << 8);
+    return col + ((*pixel++) << 16);
+}
+
+STATIC void rgb888_fill_rect(const mp_obj_framebuf_t *fb, unsigned int x, unsigned int y, unsigned int w, unsigned int h, uint32_t col) {
+    for (int yy=y; yy < y+h; yy++) {
+        uint8_t *pixel = &((uint8_t*)fb->buf)[3 * x + yy * fb->stride];
+        for (int xx=x; xx < x+w; xx++) {
+            *pixel++ = col & 0xff;
+            *pixel++ = (col >> 8) & 0xff;
+            *pixel++ = (col >> 16) & 0xff;
+        }
+    }
+}
+
 STATIC mp_framebuf_p_t formats[] = {
     [FRAMEBUF_MVLSB] = {mvlsb_setpixel, mvlsb_getpixel, mvlsb_fill_rect},
     [FRAMEBUF_RGB565] = {rgb565_setpixel, rgb565_getpixel, rgb565_fill_rect},
@@ -314,6 +344,7 @@ STATIC mp_framebuf_p_t formats[] = {
     [FRAMEBUF_MHLSB] = {mono_horiz_setpixel, mono_horiz_getpixel, mono_horiz_fill_rect},
     [FRAMEBUF_MHMSB] = {mono_horiz_setpixel, mono_horiz_getpixel, mono_horiz_fill_rect},
     [FRAMEBUF_GS4_HLSB] = {gs4_hlsb_setpixel, gs4_hlsb_getpixel, gs4_hlsb_fill_rect},
+    [FRAMEBUF_RGB888] = {rgb888_setpixel, rgb888_getpixel, rgb888_fill_rect},
 };
 
 STATIC inline void setpixel(const mp_obj_framebuf_t *fb, unsigned int x, unsigned int y, uint32_t col) {
@@ -458,7 +489,6 @@ STATIC mp_obj_t framebuf_make_new(const mp_obj_type_t *type, size_t n_args, size
     switch (o->format) {
         case FRAMEBUF_MVLSB:
         case FRAMEBUF_RGB565:
-            break;
         case FRAMEBUF_MHLSB:
         case FRAMEBUF_MHMSB:
             o->stride = (o->stride + 7) & ~7;
@@ -471,6 +501,9 @@ STATIC mp_obj_t framebuf_make_new(const mp_obj_type_t *type, size_t n_args, size
             o->stride = (o->stride + 1) & ~1;
             break;
         case FRAMEBUF_GS8:
+            break;
+        case FRAMEBUF_RGB888:
+            o->stride = o->stride * 3;
             break;
         default:
             mp_raise_ValueError(MP_ERROR_TEXT("invalid format"));
@@ -1512,6 +1545,16 @@ STATIC const mp_rom_map_elem_t framebuf_locals_dict_table[] = {
 };
 STATIC MP_DEFINE_CONST_DICT(framebuf_locals_dict, framebuf_locals_dict_table);
 
+#ifdef MP_OBJ_TYPE_GET_SLOT
+STATIC MP_DEFINE_CONST_OBJ_TYPE(
+    mp_type_framebuf,
+    MP_QSTR_FrameBuffer,
+    MP_TYPE_FLAG_NONE,
+    make_new, framebuf_make_new,
+    buffer, framebuf_get_buffer,
+    locals_dict, (mp_obj_dict_t *)&framebuf_locals_dict
+);
+#else
 STATIC const mp_obj_type_t mp_type_framebuf = {
     { &mp_type_type },
     .name = MP_QSTR_FrameBuffer,
@@ -1519,6 +1562,8 @@ STATIC const mp_obj_type_t mp_type_framebuf = {
     .buffer_p = { .get_buffer = framebuf_get_buffer },
     .locals_dict = (mp_obj_dict_t *)&framebuf_locals_dict,
 };
+#endif
+
 #endif
 
 // this factory function is provided for backwards compatibility with old FrameBuffer1 class
@@ -1556,6 +1601,7 @@ STATIC const mp_rom_map_elem_t framebuf_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_MONO_HLSB), MP_ROM_INT(FRAMEBUF_MHLSB) },
     { MP_ROM_QSTR(MP_QSTR_MONO_HMSB), MP_ROM_INT(FRAMEBUF_MHMSB) },
     { MP_ROM_QSTR(MP_QSTR_GS4_HLSB), MP_ROM_INT(FRAMEBUF_GS4_HLSB) },
+    { MP_ROM_QSTR(MP_QSTR_RGB888), MP_ROM_INT(FRAMEBUF_RGB888) },
 };
 
 STATIC MP_DEFINE_CONST_DICT(framebuf_module_globals, framebuf_module_globals_table);
