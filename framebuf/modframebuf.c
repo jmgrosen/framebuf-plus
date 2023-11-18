@@ -462,6 +462,7 @@ STATIC color_converts_t converts[] = {
     [FRAMEBUF_MHLSB]    = NULL,
     [FRAMEBUF_MHMSB]    = NULL,
     [FRAMEBUF_GS4_HLSB] = rgb888_to_gs4,
+    [FRAMEBUF_RGB888]   = NULL,
 };
 
 #endif
@@ -1196,6 +1197,18 @@ uint32_t gs4_alpha_blend(const FontProperties *props, uint8_t bpp, uint32_t alph
     return temp;
 }
 
+uint32_t rgb888_alpha_blend(const FontProperties *props, uint8_t bpp, uint32_t alpha)
+{
+  // TODO: fix this up.
+  uint32_t subpixel_value;
+  if (bpp <= 8) {
+    subpixel_value = alpha << (8 - bpp);
+  } else {
+    subpixel_value = alpha >> (bpp - 8);
+  }
+  return subpixel_value | (subpixel_value << 8) | (subpixel_value << 16);
+}
+
 
 STATIC alpha_blend_t alpha_blends[] = {
     [FRAMEBUF_MVLSB]    = gs4_alpha_blend,    // TODO
@@ -1206,6 +1219,7 @@ STATIC alpha_blend_t alpha_blends[] = {
     [FRAMEBUF_MHLSB]    = gs4_alpha_blend,    // TODO
     [FRAMEBUF_MHMSB]    = gs4_alpha_blend,    // TODO
     [FRAMEBUF_GS4_HLSB] = gs4_alpha_blend,
+    [FRAMEBUF_RGB888]   = rgb888_alpha_blend,
 };
 
 // args:
